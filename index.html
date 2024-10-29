@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<script src='canvas.js'></script>
+<script src='rect2d.js'></script>
+<script>
+	"use strict";
+
+	var 
+		gBlockInputX, gBlockInputZ,
+		rect, guiBlock,
+		screen;
+
+
+	function MiniMap() {};
+	MiniMap.prototype = 
+	{
+		init: function( params )
+		{
+			gNumCellsX = 6;
+			gNumCellsY = 6;
+
+			canvas  = document.getElementById( 'canvas' );
+
+			// Convert gNumCellsX to GridSize
+			if( gNumCellsX )
+			{
+				canvas.width  = (gNumCellsX * gCellSizeX) + 1;
+				canvas.height = (gNumCellsY * gCellSizeY) + 1;
+				console.log( "Resizing canvas to %o x %o", canvas.width, canvas.height );
+			}
+
+			gGridW = canvas.width;
+			gGridH = canvas.height;
+			context = canvas.getContext( '2d' );
+			context.globalCompositeOperation = "source-over"; // should default to blend but just to be safe
+			image   = context.createImageData( gGridW, gGridH );
+			data    = image.data;
+
+			gNumCellsX = (gGridW - 1) / gCellSizeX;
+			gNumCellsY = (gGridH - 1) / gCellSizeY;
+
+			var bound = canvas.getBoundingClientRect();
+			gCanvasX = bound.x | 0;
+			gCanvasY = bound.y | 0;
+
+			if( params !== undefined )
+			{
+				if (params.showAxis)
+				{
+					var AxisOffset = cell_to_canvas( 3, 3 );
+					gOffsetX = ((canvas.width - 1) / 2) | 0;
+					gOffsetY = ((canvas.height- 1) / 2) | 0;
+				}
+			}
+
+			return this;
+		},
+		
+		render: function( timestamp )
+		{
+			clear();
+			get();
+			grid( [192, 192, 192, 255], gGridW, gGridH, gCellSizeX, gCellSizeY, [192, 0, 0, 255], [0, 192, 0, 255] );
+			draw();
+			
+			rect.drawInsideCell( 1 );
+		}
+	};
+
+
+	//-16..-1 = Chunk -1
+	//  0..15 = Chunk  0
+	// 16..31 = Chunk +1
+	// ======================================================================
+	function BlockQuantizeToChunk(n)
+	{
+		var n0 = n;
+		if (n < 0)
+			n0 = Math.abs(n) - 1;
+		var n1 = n0/16 | 0;
+		n1 *= 16;
+		if (n < 0)
+			n1 = -n1 - 16;
+		var n2 = n1 + 15;
+		return { start: n1, end: n2 };
+	}
+
+	// ======================================================================
+	function GetQuantizedBlockCoords()
+	{
+		var
+			BlockX = parseInt( gBlockInputX.value ),
+			BlockZ = parseInt( gBlockInputZ.value ),
+
+			ChunkX = BlockQuantizeToChunk( BlockX ),
+			ChunkZ = BlockQuantizeToChunk( BlockZ ),
+
+			minX = Math.min( ChunkX.start, ChunkX.end ),
+			maxX = Math.max( ChunkX.start, ChunkX.end ),
+			minZ = Math.min( ChunkZ.start, ChunkZ.end ),
+			maxZ = Math.max( ChunkZ.start, ChunkZ.end );
+		return { X0: minX, Z0: minZ, X1: maxX, Z1: maxZ, ChunkX: (minX/16)|0, ChunkZ: (minZ/16)|0 };
+	}
+
+	// ======================================================================
+	function LoadX()
+	{
+		var savedX = localStorage.getItem( 'x' );
+		if ((savedX !== undefined) && (savedX !== null))
+		{
+			gBlockInputX.value = parseInt( savedX );
+			console.log( "Restored X: %o", savedX );
+		}
+	}
+
+	// ======================================================================
+	function LoadZ()
+	{
+		var savedZ = localStorage.getItem( 'z' );
+		if ((savedZ !== undefined) && (savedZ !== null))
+		{
+			gBlockInputZ.value = parseInt( savedZ );
+			console.log( "Restored Z: %o", savedZ );
+		}
+	}
+
+	// ======================================================================
+	function OnAnimFrame( timestamp )
+	{
+		screen.render( timestamp );
+		window.requestAnimationFrame( OnAnimFrame );
+	}
+
+	// ======================================================================
+	function OnChange(elem)
+	{
+		if (elem === undefined)
+			return;
+
+		if (elem.id === 'CellX')
+		{
+			SaveX();
+		}
+
+		if (elem.id === 'CellZ')
+		{
+			SaveZ();
+		}
+		UpdateMiniMap();
+	}
+
+	// ======================================================================
+	function OnClickXDelta( deltaX )
+	{
+		var x = parseInt( gBlockInputX.value ) + (deltaX|0);
+		SetX( x );
+		UpdateMiniMap();
+	}
+
+	// ======================================================================
+	function OnClickZDelta( deltaZ )
+	{
+		var z = parseInt( gBlockInputZ.value ) + (deltaZ|0);
+		SetZ( z );
+		UpdateMiniMap();
+	}
+
+	// Zoom  Offset
+	// 0     0
+	// 1    -16
+	// 2    -32
+	// 3    -64
+	// 4    -128
+	// Quantize coordinate
+	// ======================================================================
+	function OnClickXMap( deltaX, zoom )
+	{
+		var x = parseInt( gBlockInputX.value );
+		var remainder = x % deltaX;
+		x += (deltaX - remainder);
+		SetX( x );
+		UpdateMiniMap();
+	}
+
+	// Quantize coordinate
+	function OnClickZMap( deltaZ, zoom )
+	{
+		var z = parseInt( gBlockInputZ.value );
+		var remainder = z % deltaZ;
+		z += (deltaZ - remainder);
+		SetZ( z );
+		UpdateMiniMap();
+	}
+
+	// ======================================================================
+	function OnClickXReset( value )
+	{
+		SetX( value|0 );
+		UpdateMiniMap();
+	}
+
+	// ======================================================================
+	function OnClickZReset( value )
+	{
+		SetZ( value|0 );
+		UpdateMiniMap();
+	}
+
+	// ======================================================================
+	function OnLoad()
+	{
+		gBlockInputX = document.getElementById( 'CellX' );
+		gBlockInputZ = document.getElementById( 'CellZ' );
+
+		LoadX();
+		LoadZ();
+
+		screen = new MiniMap().init( { showAxis: true  } );
+		rect = new rect2d().init( [ 0, 0, 1, 1 ], '#a0a0ffa0', '#000080a0' );
+		guiBlock = new rect2d().init( [0, 0, 1, 1, ], '#ffa0a0a0', '#008000a0' );
+
+		UpdateMiniMap();
+		OnAnimFrame( 0 );
+	}
+
+	// ======================================================================
+	function OnQuantizeTopLeft( elem )
+	{
+		var BlockCoord = GetQuantizedBlockCoords();
+		SetX( BlockCoord.X0 );
+		SetZ( BlockCoord.Z0 );
+		UpdateMiniMap();
+	}
+
+	// ======================================================================
+	function OnQuantizeTopRight( elem )
+	{
+		var BlockCoord = GetQuantizedBlockCoords();
+		SetX( BlockCoord.X1 );
+		SetZ( BlockCoord.Z0 );
+		UpdateMiniMap();
+	}
+
+	// ======================================================================
+	function OnQuantizeBottomLeft( elem )
+	{
+		var BlockCoord = GetQuantizedBlockCoords();
+		SetX( BlockCoord.X0 );
+		SetZ( BlockCoord.Z1 );
+		UpdateMiniMap();
+	}
+	// ======================================================================
+	function OnQuantizeBottomRight( elem )
+	{
+		var BlockCoord = GetQuantizedBlockCoords();
+		SetX( BlockCoord.X1 );
+		SetZ( BlockCoord.Z1 );
+		UpdateMiniMap();
+	}
+
+	// ======================================================================
+	function SaveX()
+	{
+		localStorage.setItem( 'x', gBlockInputX.value );
+	}
+
+	// ======================================================================
+	function SaveZ()
+	{
+		localStorage.setItem( 'z', gBlockInputZ.value );
+	}
+
+	// ======================================================================
+	function SetX( x )
+	{
+		gBlockInputX.value = parseInt( x );
+		SaveX();
+	}
+
+	// ======================================================================
+	function SetZ( z )
+	{
+		gBlockInputZ.value = parseInt( z );
+		SaveZ();
+	}
+
+	// ======================================================================
+	function UpdateMiniMap()
+	{
+		var 
+			BlockCoords = GetQuantizedBlockCoords(),
+			Out = document.getElementById( 'output' ),
+			ChunkX = document.getElementById( 'ChunkX' ),
+			ChunkZ = document.getElementById( 'ChunkZ' ),
+			Text = ""
+				+ BlockCoords.ChunkX + ", " + BlockCoords.ChunkZ + ": "
+				+ "(top left) "
+				+ BlockCoords.X0 + "," + BlockCoords.Z0
+				+ " to "
+				+ BlockCoords.X1 + "," + BlockCoords.Z1
+				+ " (bottom right)";
+		Out.innerText = Text;
+		ChunkX.value = BlockCoords.ChunkX;
+		ChunkZ.value = BlockCoords.ChunkZ;
+
+		if (BlockCoords.X0 < -16) { rect.left  = -2; rect.right = -1; }
+		if (BlockCoords.X0 ==-16) { rect.left  = -1; rect.right =  0; }
+		if (BlockCoords.X0 ==  0) { rect.left  =  0; rect.right =  1; }
+		if (BlockCoords.X0 >   0) { rect.left  =  1; rect.right =  2; }
+
+		if (BlockCoords.Z0 < -16) { rect.top = -2; rect.bot = -1; }
+		if (BlockCoords.Z0 ==-16) { rect.top = -1; rect.bot =  0; }
+		if (BlockCoords.Z0 ==  0) { rect.top =  0; rect.bot =  1; }
+		if (BlockCoords.Z0 >   0) { rect.top =  1; rect.bot =  2; }
+	}
+</script>
+<head>
+<body onload="OnLoad()">
+<h2>Minecraft Block Position to Chunk Coordinates Calculator</h2>
+<b>Block</b><br>
+<div>
+X: <input id='CellX' type='number' min='-29,999,984' max='+29,999,984' value='0' onchange='OnChange(this);'></input> 
+ <button id='SubX16' onclick='OnClickXDelta(-64);'>-64</button>
+ <button id='SubX16' onclick='OnClickXDelta(-16);'>-16</button>
+ <button id='SubX1'  onclick='OnClickXDelta( -1);'> -1</button>
+ <button id='SetX0'  onclick='OnClickXReset(  0);'>  0</button>
+ <button id='AddX1'  onclick='OnClickXDelta( +1);'> +1</button>
+ <button id='AddX16' onclick='OnClickXDelta(+16);'>+16</button>
+ <button id='AddX16' onclick='OnClickXDelta(+64);'>+64</button>
+</div>
+<div>
+Quantize East/West:
+ <button onclick='OnClickXMap(-2048, 4);'>-2048 (Zoom 4)</button>
+ <button onclick='OnClickXMap(-1024, 3);'>-1024 (Zoom 3)</button>
+ <button onclick='OnClickXMap( -512, 2);'> -512 (Zoom 2)</button>
+ <button onclick='OnClickXMap( -256, 1);'> -256 (Zoom 1)</button>
+ <button onclick='OnClickXMap( -128, 0);'> -128 (Zoom 0)</button>
+
+ <button onclick='OnClickXMap( +128, 0);'> +128 (Zoom 0)</button>
+ <button onclick='OnClickXMap( +256, 1);'> +256 (Zoom 1)</button>
+ <button onclick='OnClickXMap( +512, 2);'> +512 (Zoom 2)</button>
+ <button onclick='OnClickXMap(+1024, 3);'>+1024 (Zoom 3)</button>
+ <button onclick='OnClickXMap(+2048, 4);'>+2048 (Zoom 4)</button>
+</div>
+<br>
+<br>
+<div>
+Z: <input id='CellZ' type='number' min='-29,999,984' max='+29,999,984' value='0'  onchange='OnChange(this);'></input>
+ <button id='AddZ64'   onclick='OnClickZDelta(-64)  ;'>-64</button>
+ <button id='SubZ16'   onclick='OnClickZDelta(-16)  ;'>-16</button>
+ <button id='SubZ1'    onclick='OnClickZDelta( -1)  ;'> -1</button>
+ <button id='SetZ0'    onclick='OnClickZReset(  0)  ;'>  0</button>
+ <button id='AddZ1'    onclick='OnClickZDelta( +1)  ;'> +1</button>
+ <button id='AddZ16'   onclick='OnClickZDelta(+16)  ;'>+16</button>
+ <button id='AddZ64'   onclick='OnClickZDelta(+64)  ;'>+64</button>
+</div>
+<div>
+Quantized North/South:
+ <button onclick='OnClickZMap(-2048, 4);'>-2048 (Zoom 4)</button>
+ <button onclick='OnClickZMap(-1024, 3);'>-1024 (Zoom 3)</button>
+ <button onclick='OnClickZMap( -512, 2);'> -512 (Zoom 2)</button>
+ <button onclick='OnClickZMap( -256, 1);'> -256 (Zoom 1)</button>
+ <button onclick='OnClickZMap( -128, 0);'> -128 (Zoom 0)</button>
+
+ <button onclick='OnClickZMap( +128, 0);'> +128 (Zoom 0)</button>
+ <button onclick='OnClickZMap( +256, 1);'> +256 (Zoom 1)</button>
+ <button onclick='OnClickZMap( +512, 2);'> +512 (Zoom 2)</button>
+ <button onclick='OnClickZMap(+1024, 3);'>+1024 (Zoom 3)</button>
+ <button onclick='OnClickZMap(+2048, 4);'>+2048 (Zoom 4)</button>
+</div>
+<br>
+<br>
+<table>
+	<tr>
+		<td><button onclick='OnQuantizeTopLeft    (this);'>Quantize Chunk Top Left </button></td>
+		<td><button onclick='OnQuantizeTopRight   (this);'>Quantize Chunk Top Right</button></td>
+	</tr>
+	<tr>
+		<td><button onclick='OnQuantizeBottomLeft (this);'>Quantize Chunk Bottom Left </button></td>
+		<td><button onclick='OnQuantizeBottomRight(this);'>Quantize Chunk Bottom Right</button></td>
+	</tr>
+</table>
+<br>
+<b>Chunk</b><br>
+<table>
+	<tr>
+		<td>X: </td><td><input id='ChunkX' disabled type='number' min='-29,999,984' max='+29,999,984' value='0'></button></td>
+		<td>Z: </td><td><input id='ChunkZ' disabled type='number' min='-29,999,984' max='+29,999,984' value='0'></button></td>
+	</tr>
+</table>
+<div id='output'style='display:inline-block;'></div>
+<table>
+	<tr>
+		<td valign='top'>
+			<canvas id='canvas' width='121' height='161'>
+			HTML5 Canvas not supported!
+			</canvas>
+		</td>
+		<td style='width:5%;'></td>
+		<td>
+<pre id = 'MiniMap'>
+           North
+            -Z 
+             &uarr;
+             |
+             |
+             |
+West -X &larr;---0,0---&rarr; +X East
+             |
+             |
+             |
+             &darr;
+            +Z
+           South
+</pre>
+		</td>
+	</tr>
+</table>
+<br>
+<h2>Instructions</h2>
+Enter in X and Z coordinate. The chunk information will be updated automatically.
+<br>
+Help:<br>
+* <a href='https://minecraft.fandom.com/wiki/Map#Zooming_out'>Map (Zooming out)</a><br>
+* <a href='https://minecraft.fandom.com/wiki/Coordinates'>Coordinates</a><br>
+<br>
+Copyleft 2024 <span style='font-size:14px;'> by <i>Michaelangel007</i></span> <img alt='m007' src='pics/m007.png'> <i><a href='https://www.reddit.com/user/MysticReddit'>/u/MysticReddit</a></i><br>
+</body>
